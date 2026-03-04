@@ -2,3 +2,25 @@
 
 The aim is the prediction of the number of 16s rRNA genes based on available genomes, using comparative phylogenetics methods.
 The genomes belong to the bacteria in particular the class Alphaproteobacteria.
+
+## How to use
+Input required: table with two columns: accession numbers and organisms' names
+Output: Prediction of the number of 16S rRNA copies of new genomes
+
+## Procedure
+1. Modification of the intial names, by putting together accessionnumber_organismname (useful for later visualization purposes)
+2. Creation of a file with the accession numbers to download the gff3 files.
+3. Usage of the tool barrnap that is able to extract for each genome the 16s rRNA sequences present, in particular as output of barrnap we have a fasta file for each genome containing the different copies of 16s rRNA for that genome
+4. Creation of a table containing for each accession number the correspondent fasta headers
+5. Merge of this table with the one containing accesionnumbers_organismsnames
+6. Concatenate all the 16s rRNA sequences into a unique file, and rename the headers using the previously created table, so that the header of the sequence is changed from sequence description to accessionnumber_organismname
+7. Creation of the table containing the name of the sequence and the counts of 16s rRNA
+8. Building of the phylogenetic tree starting from the 16s rRNA sequences, using MUSCLE as alignment tool, and creation of a tree in which for each genome there is the correspondent number of copies of 16s rRNA (different colors in the legend)
+9. Fitting of a model that applies to our phylogenetic tree-traits, choice of the model based on the AIC value
+10. Plotting the tree according to the model
+11. Prediction of missing traits with phyestimate
+11a. Phyestimate used in the prediction, using all the available 16s rRNA copies for each organism
+11b. Phyestimate used in the prediction, using only one copy of 16s rRNA for each organism
+12. Correlation between predictive and effective trait
+13. Another approach to estimate the trait that axploits also the information of the specific model
+14. 
