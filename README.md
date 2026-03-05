@@ -15,7 +15,7 @@ a table containing two columns:
 **Output**:
 Prediction of the number of 16S rRNA copies for new genomes
 
-## Requirements
+## :gear: Requirements
 Software and tools used in this workflow:
 - R
 - MUSCLE (sequence alignment)
