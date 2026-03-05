@@ -1,4 +1,4 @@
-# PredictionNumber16srRNA
+# 16S-rRNA-copy-number-prediction
 The aim is the prediction of the number of 16S rRNA gene copies in bacterial genomes, using comparative phylogenetics methods.
 The analysis focuses on bacteria belonging to the class Alphaproteobacteria and uses available genomes to infer the number of 16S rRNA copies in new genomes.
 
