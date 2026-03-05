@@ -2,6 +2,9 @@
 The aim is the prediction of the number of 16s rRNA gene copies in bacterial genomes, using comparative phylogenetics methods.
 The analysis focuses on bacteria belonging to the class Alphaproteobacteria and uses available genomes to infer the number of 16S rRNA copies in new genomes.
 
+## Workflow overview
+<img width="453" height="665" alt="workflow_prediction_16srRNA drawio" src="https://github.com/user-attachments/assets/3c48e610-0ea9-4163-93c5-21251aeaf18d" />
+
 ## How to use
 
 **Input required**: 
