@@ -1,0 +1,604 @@
+---
+title: "Prediction of 16srRNA gene copy number"
+author: "Michela Dell'Alma"
+output:
+  html_document: default
+  pdf_document: default
+date: "2025-01-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) # print the code along with the output
+```
+
+# Aim of the project
+
+The aim of the project is the prediction of 16s rRNA gene copy number for a given genome; the genomes that we are looking at belong to the Alphaproteobacteria. 
+
+The approach used for the project is based on the use of Phylogenetic Comparative Methods.
+
+## Introduction and downloading of the genomes
+
+The Alphaproteobacteria is one of the largest group within bacteria, it comprises some of the most environmentally abundant and metabolically diverse organisms on earth. 
+Alphaproteobacteria is of central importance for agricultural (e.g Rhizobia) and medical (e.g. Rickettsia) applications.
+
+In the original table we had a very high amount of Alphaproteobacteria species (alpha_proteobacteria_genomes640.xlsx), we decide to restrict the analysis to a smaller representative group of Alphaproteobacteria, in particular in a paper in which was reconstructed the phylogenetics tree of Alphaproteobacteria [1], have been selected 64 Alphaproteobacterial genomes used also in a previous study, based on two principles: 
+
+1. All of the 12 and 9 genomes from Rickettsiales and Holosporales were kept
+2. 43 genomes covering all major clades were selected to represent the diversity of Alphaproteobacteria
+
+We decided to restrict the analysis to only this subset of Alphaproteobacteria because of high requirements in terms of memory, computational work and time.
+
+This 64 genomes are retrieved in the file "paper_acc_num.txt", and have been taken from the Supplementary Table 1 of the paper in the citation [1]
+
+```{r Loading libraries, message=FALSE, warning=FALSE}
+library("readxl")  # read excel table
+library("stringr")  # character manipulation
+library("dplyr")  # data manipulation
+library("writexl") # write excel table
+library("lmtest") # perform model evaluation (likelihood-ratio test)
+library("picante") # usage of phyestimate function
+library("corHMM") # use the corHMM function, used to predict traits for a give genome in the phylogenetic tree
+```
+
+
+Retrieval of a subset of accession numbers associated with organism names
+
+```{r Retrieval of accession numbers of interest, warning=FALSE}
+
+acc_num_paper <- read.table("/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/1_Download_genomes/paper_accession_numbers.txt") # accession numbers present in the paper
+colnames(acc_num_paper) <- "Assembly_Accession"
+dim(acc_num_paper)
+
+tot_table <- read_excel("/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/1_Download_genomes/alpha_proteobacteria_genomes640.xlsx") # table containing all the alpha-proteobacteria species from our excel file
+head(tot_table)
+tot_table_new <- tot_table[,c(1,3)] # take columns 1 and 3 ("Assembly Accession" and "Organism Name" columns)
+head(tot_table_new)
+
+tab_accnum_names <- inner_join(acc_num_paper, tot_table_new,
+           by = c("Assembly_Accession")) # join the two tables on the accession number in common, in order to have a table containing accession number of our interest (those present in the paper) and organism name
+dim(tab_accnum_names) # 60 rows
+head(tab_accnum_names)
+
+```
+
+Modification and Renaming of the 'Organism Name' column, creation of a third column "names" containing AssemblyAccession_OrganismName, in order to have the right names on the tips of the phylogenetic tree
+
+```{r Retrieval names for the phylogenetic tree tips}
+# change the 2nd column so that it only contains the first two words (genus and species, separated by an underscore)
+# because the other informations are not useful
+tab_accnum_names$`Organism Name` <- stringr::word(tab_accnum_names$`Organism Name`, 1, 2, sep=" ")
+# remove any cases of new line characters
+tab_accnum_names$`Organism Name` <- str_replace_all(tab_accnum_names$`Organism Name`, "[\r\n]" , "")
+# add an underscore between the genus and species name
+tab_accnum_names$`Organism Name` = gsub(" ", "_", tab_accnum_names$`Organism Name`)
+head(tab_accnum_names)
+
+# creation of a third column that contains the names of our interest (i.e assemblyaccession_organismname)
+tab_accnum_names$names <- paste(tab_accnum_names$Assembly_Accession, tab_accnum_names$`Organism Name`)
+tab_accnum_names$names <- gsub(" ", "_", tab_accnum_names$name)
+head(tab_accnum_names)
+```
+
+Creation of a file containing the accession numbers to download
+
+```{r Creation file accession numbers, warning=FALSE}
+setwd("/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/1_Download_genomes")
+getwd()
+df_acc_num <- as.data.frame(tab_accnum_names$Assembly_Accession)
+colnames(df_acc_num) <- "Assembly Accession"
+write.table(df_acc_num, "acc_num_phylo_tree.txt", quote=FALSE, col.names = FALSE, row.names=FALSE)
+```
+
+Download accession numbers' genomes from ncbi using the command in the script (1_Download.sh). 
+This command download three types of files: gbff, gff3, genomes.
+The gbff was downloaded in order to extract the number of copies of 16s rRNA, but since this file has no information of number of copies for a significant number of accession numbers, we decide to use another approach. 
+
+In particular a tool called barrnap that starting from the gff3 file is able to extract all the 16s rRNA copies (2_Barrnap.sh) for each genome.
+
+## Recovering of 16s rRNA sequences and change of FASTA header names
+
+We move all the fasta files containing the 16s rRNA copies to a folder named 16s_sequences (3_Move16s_seqs.sh).
+
+We change all the fasta header with the accession number and organisms' informations, this is important to do in order to have the right names in the phylogenetic tree tips
+
+```{r Change of FASTA header names}
+
+library(phylotools)
+setwd("/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/2_Extract_16s_sequences/16s_sequences")
+getwd()
+
+dir <- "/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/2_Extract_16s_sequences/16s_sequences"
+files <- list.files(dir) # get a list of all files .fasta in the name in your directory
+
+# creation of an empty table with two columns
+tab_accnum_fasta <- data.frame(matrix(ncol = 2))
+colnames(tab_accnum_fasta) <- c("Assembly_Accession", "FASTA_header")
+
+num = 0
+for (file in files) {
+    name_ext <- basename(file) # path dir without the extension
+    name <- tools::file_path_sans_ext(name_ext) # put in the table the accession number without the path of the directory
+    header_fasta <- ape::read.FASTA(file) # take the header of the fasta file
+    name_seq <- names(header_fasta) # and put it into a variable
+    df <- data.frame("Assembly_Accession" = name, "FASTA_header" = name_seq) # creation of a table in which for each fasta header there is the correspondent accession number
+    tab_accnum_fasta <- rbind(df, tab_accnum_fasta) 
+}
+head(tab_accnum_fasta)
+
+# delete last row of the dataframe, that is empty
+tab_accnum_fasta <- tab_accnum_fasta[rowSums(is.na(tab_accnum_fasta)) != ncol(tab_accnum_fasta), ]
+
+tab_accnum_fasta$Assembly_Accession <- sub("\\..*", "", tab_accnum_fasta$Assembly_Accession) # delete the numbers of the accession name after the point
+tab_accnum_names$Assembly_Accession <- sub("\\..*", "", tab_accnum_names$Assembly_Accession) # delete the numbers of the accession name after the point
+```
+
+Join the two tables tab_accnum_fasta and tab_accnum_names on assembly accession number to have for each accnum_orgname, the correspondent fasta header
+
+```{r Creation table FASTA header and accnum_orgname as columns}
+final_tab <- merge(tab_accnum_names, tab_accnum_fasta, by="Assembly_Accession")
+head(final_tab)
+ncol(final_tab)
+```
+Creation of a table in which there are fasta headers and the correspondent new name that we would like to give (accnum_orgname).
+
+The creation of this table is useful because it is required to the rename.fasta function that we are going to use next.
+
+```{r Selection of columns}
+tab_names_header <- final_tab[,c(3,4)]
+head(tab_names_header,7)
+```
+
+Modification of the table: assign a unique id to the names that are duplicates (multiple copies of 16s rRNA for the same name acc_num_organism).
+
+```{r Assignment of a unique Name_ID}
+tab_names_header <- tab_names_header %>%
+  group_by(names) %>%
+  mutate(Name_ID = paste(names, row_number(), sep = "_")) %>%
+  ungroup()
+colnames(tab_names_header)
+head(tab_names_header)
+```
+
+Take only the columns of our interest (FASTA_header and Name_ID)
+
+```{r Selection of columns new}
+tab_names_header <- tab_names_header[,c(2,3)]
+head(tab_names_header)
+```
+
+After having concatenated all the fasta sequences in a unique file (16s_sequences.fasta), we rename the fasta using the previously created table with names and header of the fasta file
+
+```{r Rename FASTA file}
+setwd("/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/2_Extract_16s_sequences/")
+getwd()
+rename.fasta(infile = "16s_sequences.fasta", tab_names_header, outfile = "renamed_16s_seq_new.fasta")
+```
+
+## Creation of the table containing number of 16s rRNA copies for each genome
+
+We used this script (4_Count_16srRNA.sh) in order to have a table containing accession numbers and number of copies of 16s rRNA. 
+The output is called "accnum_count16s.txt".
+
+We create a final table that contains information on Assembly Accession, count of 16s rRNA, organism names and fasta header and we write it to a final txt file (trait_vs_accnum.txt)
+
+```{r Creation of final table with all infos}
+final_tab <- merge(tab_names_header, final_tab, by="FASTA_header") # table with names ID (not duplicates)
+final_tab <- final_tab[order(final_tab$`Organism Name`),]
+trait_tab <- read.table("/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/3_Extract_num_16s_per_genome/accnum_count16s.txt")
+colnames(trait_tab) <- c("Assembly_Accession", "count")
+dim(trait_tab)
+tot_info_table <- merge(trait_tab, final_tab, by = "Assembly_Accession")
+dim(tot_info_table)
+setwd("/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/5_Phylogenetic_tree/")
+getwd()
+write.table(tot_info_table, "trait_vs_accnum.txt")
+head(tot_info_table)
+```
+
+## Analysis of the phylogenetic tree
+
+All copies of 16s rRNA sequences for each organism have been taken into account in order to build a phylogenetic tree in the MEGA software.
+
+The algorithm used for sequence alignment was MUSCLE, because MUSCLE has a significant speed advantage over the others MSA algorithm [2], like clustalw that we tried to use it but it takes very much time.
+
+The algorithm used for phylogenetic tree building was the neighbor-joining one, because it is faster respect to other methods.
+
+One error that we encountered during the usage of the neighbor-joining algorithm in the building of the phylogenetic tree is "MEGA was unable to calculate the distance between one and several of the sequence pairs in the alignment", for this reason we identify such offending pairs and remove it from the phylogenetic tree (we identify them because the error also point out the accession numbers to delete)
+
+Loading phylogenetic tree, computed by MEGA software
+
+```{r Read Newick file}
+library(phytools)
+setwd("/Users/micheladellalma/Desktop/PROJECT/2nd_analysis/5_Phylogenetic_tree")
+getwd()
+phylo_tree <- read.newick("Newick Export.nwk")
+str(phylo_tree) # see the components present in the tree object, in particular it is a list composed by 5 elements
+```
+```{r Check same names in the tree and in the table, echo=FALSE}
+library(geiger)
+# take only the names used either in the tree and the counts table (trait)
+tab_trait_treename <- tot_info_table[,c(4,2)] # take column "count" and "Name_ID"
+# put Name_ID as row name
+row.names(tab_trait_treename) <- tab_trait_treename$Name_ID
+tab_trait_treename$Name_ID.x <- NULL
+name.check(phylo_tree, tab_trait_treename) # check that the tree and the trait table contain the same Accnum_organismname
+head(tab_trait_treename)
+```
+Drop labels from the tot_info_tab table, these accession numbers correspond to the ones we have deleted in the MEGA phylogenetic tree because of the error on pairwise alignment
+
+```{r Drop additional tip labels}
+tab_trait_treename <- as.data.frame(tab_trait_treename)
+labels_data <- c("GCA_000300275.1_Thalassospira_profundimaris_1", "GCA_000375545.1_Kordiimonas_gwangyangensis_1")
+tab_trait_treename <- tab_trait_treename %>%
+  filter(!(row.names(tab_trait_treename) %in% labels_data))
+```
+
+Check dimensions
+```{r Check dim}
+dim(tab_trait_treename)
+```
+
+Re-checking names
+```{r Re-check names}
+name.check(phylo_tree,tab_trait_treename)
+```
+
+Plot phylogenetic tree
+```{r Plot phylogenetic tree}
+## extract number of copies as a vector
+num.copies <- setNames(tab_trait_treename[,2], rownames(tab_trait_treename))
+## set colors for plotting
+cols <- setNames(c("red","lightblue", "yellow","violet","blue","grey","green","brown","orange","pink"), levels(as.factor(num.copies)))
+## plot the tree & data
+plotTree.datamatrix(phylo_tree,as.data.frame(num.copies),
+                    colors=list(cols), header=FALSE, fsize=0.2)
+## add legend
+legend("topright", levels(as.factor(num.copies)),pch=22,
+       pt.cex=1.5,pt.bg=cols,bty="n",cex=0.8)
+```
+
+
+## Further steps
+
+1. Find the model that apply to our phylogenetic tree-traits
+
+2. Plot of the tree according to the model
+
+3.a. Prediction of missing traits with phyestimate
+
+3.b. Phyestimate used in the prediction of the number of copies of 16s rRNA for all the group of 16s rRNA sequences in a specific organism
+
+3.c. Phyestimate used in the prediction of the number of copies of 16s rRNA taking into account only one copy of 16s rRNA for each genome/organism
+
+4. Correlation between predicted and effective trait
+
+5. Try to use another approach to estimate the trait, that exploits also the information of the specific model
+
+### 1. Fitting discrete character evolution models and reconstructing evolution models
+
+The dominant model for the evolution of discrete characters on phylogenies is a model that has been named the Mk model [Lewis 2001].
+
+The Mk model is so dominated because it describes a continous-time, discrete k-state Markov process. 
+The Mk process is one in which changes can occur between states at any time, and the rate of change to other states depend only on the current state of the chain and not on any prior state or on how long the chain has been in its current state. 
+The process has no historical "memory", all that matters is the current state and the rate of change from that state to others [3].
+
+Here we fit three different commonly used discrete Mk models called, in order of complexity: 
+
+- ER (Equal Rates) model
+
+- SYM (Symmetric Rates) model
+
+- ARD (All Rates Different) model
+
+```{r Fitting of the model}
+fitER <- fitMk(phylo_tree,num.copies,model="ER") # Equal-Rates model fits a single transition rate between all pairs of states for our discrete trait
+fitSYM <- fitMk(phylo_tree,num.copies,model="SYM") # Symmetric transition model assumes that the rate of transition from each character state i to each state j is equal
+# to the rate of change from state j to state i but each pair of character states can have a different rate
+fitARD <- fitMk(phylo_tree,num.copies,model="ARD") # All-Rates-Different model assumes that every type of transition is allowed to occur with a different rate
+```
+
+Likelihood-ratio test
+```{r Likelihood-ratio test}
+## comparing ER & SYM
+lrtest(fitER,fitSYM)
+```
+Here, since P<0.05 (0.01217), we reject the simpler ER model in favor of the SYM model
+
+```{r Likelihood-ratio test 2nd}
+## comparing ER & ARD
+lrtest(fitER,fitARD)
+```
+Here, since P>0.05 (0.09529), we can't reject the simpler ER model in favor of the ARD model
+
+```{r Likelihood-ratio test 3rd}
+## comparing SYM & ARD
+lrtest(fitSYM,fitARD)
+```
+Here, since P>0.05 (0.719), we can't reject the simpler SYM model in favor of the ARD model.
+
+Now we compare all models to each other, using AIC (Akaike Information Criterion), we'll sort the models in order of complexity
+```{r AIC values for each model}
+## extract AIC values for each model
+aic <- setNames(c(AIC(fitER), AIC(fitSYM), AIC(fitARD)), c("ER", "SYM", "ARD"))
+## print summary vector
+print(aic)
+```
+
+We decide to use the ER model that has lower values of AIC, AIC score takes into account the complexity (number of parameters in the model).
+
+We can also compute Akaike weights, that show the weight of evidence in support of each model in our data.
+```{r Compute Akaike weights}
+aic.w(aic)
+```
+The weight for the ER model is much higher than the rest. The other two models are poorly supported by the data.
+
+Finally, we summarize all the different comparisons in one table
+```{r Table with evaluation metrics}
+round(data.frame(
+  logL=c(logLik(fitER), logLik(fitSYM), logLik(fitARD)), 
+  AIC=aic,Akaike.w=as.vector(aic.w(aic))),3)
+```
+
+### 2. Plot the tree according to the model
+
+```{r Plot according to the model}
+library(magrittr)
+fitMk(phylo_tree, num.copies, model="ER", pi="fitzjohn", logscale=TRUE,lik.func="pruning") %>% 
+  ancr %>%
+  plot(args.plotTree=list(direction="upwards"))
+```
+
+### 3. a. Prediction of missing traits with phyestimate
+
+Now we take away from the trait data, one accession number at a time and we see if can be predicted with phyestimate function
+
+In the phyestimate function the ML method is used, since as we saw previously the best model to fit our data is the Mk model and this model belongs to the ML method
+
+```{r Prediction with phyestimate}
+estimateCUE2 <- data.frame(matrix(ncol=3))
+colnames(estimateCUE2) <- c("Taxa", "Trait_predicted", "Trait_real")
+for(i in 1:297) {
+  num.copies_sub <- num.copies[-i]
+  estimater<-phyEstimateDisc(phylo_tree, num.copies_sub, method="ML", best.state = FALSE) # used the Maximum-Likelihood approach for ancestral state reconstruction because is the only one possible for discrete characters estimation
+  taxa <- row.names(estimater)
+  est <- max.col(estimater)
+  true_vl_df <- as.data.frame(num.copies[i])
+  colnames(true_vl_df) <- "Num_copies"
+  true_vl <- true_vl_df$Num_copies
+  estimateCUE2<-rbind(estimateCUE2, c(taxa, est, true_vl))
+}
+estimateCUE2 <- estimateCUE2[-1,]
+# delete first row in the dataframe
+```
+
+### 4. a. Correlation between predicted and effective trait
+
+Check correlation between estimated values and real values
+
+```{r Correlation between predicted and effective value, warning=FALSE}
+estimateCUE2$Trait_real <- as.numeric(as.character(estimateCUE2$Trait_real))# transforming columns into numeric
+estimateCUE2$Trait_predicted <- as.numeric(as.character(estimateCUE2$Trait_predicted))          
+print(cor.test(estimateCUE2$Trait_real, estimateCUE2$Trait_predicted, method="spearman"))
+```
+There is a very high correlation between estimated and true value predicted, so the ancestral state reconstruction that exploits the maximum-likelihood method is an optimal approach to predict discrete trait values in a phylogenetic tree.
+
+Maybe the prediction could be even more precise by using the information of the model that best fits the data, that is the Mk model with Equal Rates probabilities.
+
+### 5. a. Trying to use another approach to estimate the trait, that exploits also the information of the specific model
+
+Although the phyestimate function does a good job in prediction, could be used another function that is called corHMM that could be even more precise, since it takes into account the information of the model that best fits our data (ER)
+
+### 3 b. Phyestimate used in the prediction of the number of copies of 16s rRNA for all the group of 16s rRNA sequences in specific organisms
+
+We use the phyestimate function on 3 organisms and we evaluate the predicted and true value
+
+Candidatus Finniella
+```{r Phyestimate on sequences of specific oganism}
+library(picante)
+estimateCUE2 <- data.frame(matrix(ncol=3))
+colnames(estimateCUE2) <- c("Taxa", "Trait_predicted", "Trait_real")
+# creation of a list of lists
+# in particular the inner lists contain the Accnum_orgname for all the copies of 16s rRNA for a specific organism
+
+num.copies_sub <- num.copies[-c(295,296,297)]
+estimater <- phyEstimateDisc(phylo_tree, num.copies_sub, method="ML", best.state = FALSE) # used the Maximum-Likelihood approach for ancestral state reconstruction because is the only one possible for discrete characters estimation
+taxa <- row.names(estimater)[1]
+est <- mean(max.col(estimater))
+true_vl_df <- as.data.frame(num.copies[c(295,296,297)])
+colnames(true_vl_df) <- "Num_copies"
+true_vl <- mean(true_vl_df$Num_copies)
+estimateCUE2<-rbind(estimateCUE2, c(taxa, est, true_vl))
+```
+
+Rickettsia typhi
+```{r Phyestimate on sequences of specific oganism 2nd}
+num.copies_sub <- num.copies[-c(1,2,3)]
+estimater <- phyEstimateDisc(phylo_tree, num.copies_sub, method="ML", best.state = FALSE) # used the Maximum-Likelihood approach for ancestral state reconstruction because is the only one possible for discrete characters estimation
+taxa <- row.names(estimater)[1]
+est <- mean(max.col(estimater))
+true_vl_df <- as.data.frame(num.copies[c(1,2,3)])
+colnames(true_vl_df) <- "Num_copies"
+true_vl <- mean(true_vl_df$Num_copies)
+estimateCUE2<-rbind(estimateCUE2, c(taxa, est, true_vl))
+```
+
+Candidatus Pelagibacter
+```{r Phyestimate on sequences of specific oganism 3rd}
+num.copies_sub <- num.copies[-c(4,5,6)]
+estimater <- phyEstimateDisc(phylo_tree, num.copies_sub, method="ML", best.state = FALSE) # used the Maximum-Likelihood approach for ancestral state reconstruction because is the only one possible for discrete characters estimation
+taxa <- row.names(estimater)[1]
+est <- mean(max.col(estimater))
+true_vl_df <- as.data.frame(num.copies[c(4,5,6)])
+colnames(true_vl_df) <- "Num_copies"
+true_vl <- mean(true_vl_df$Num_copies)
+estimateCUE2<-rbind(estimateCUE2, c(taxa, est, true_vl))
+estimateCUE2 <- estimateCUE2[-1,]
+print(estimateCUE2)
+```
+
+By deleting the informations of the number of copies of the 16s rRNA sequences in the same organism, the prediction seems to be still effective, because predicted and real values are equal
+
+Now we redo all the analysis but with a phylogenetic tree that does not contain all the 16s rRNA copies, instead it contains only one copy of 16s rRNA for each organism
+
+We have already produced the files containing all the 16s rRNA sequences (one copy for each organism)
+
+
+### 3.c. Phyestimate used in the prediction of the number of copies of 16s rRNA taking into account only one copy of 16s rRNA for each genome/organism
+
+Already created FASTA files containing only one 16s rRNA for each accession number, the files are present in the folder 16s_sequences, and have been retrieved using this script extract1stseq.sh (/Users/micheladellalma/Desktop/PROJECT/3rd_analysis/2_Extract_16s_sequences/extract1stseq.sh)
+```{r 3c. Change of FASTA header names}
+library(phylotools)
+setwd("/Users/micheladellalma/Desktop/PROJECT/3rd_analysis/2_Extract_16s_sequences/16s_sequences")
+getwd()
+
+dir <- "/Users/micheladellalma/Desktop/PROJECT/3rd_analysis/2_Extract_16s_sequences/16s_sequences"
+files <- list.files(dir) # get a list of all files .fasta in the name in your directory
+
+# creation of an empty table with two columns
+tab_accnum_fasta <- data.frame(matrix(ncol = 2))
+colnames(tab_accnum_fasta) <- c("Assembly_Accession", "FASTA_header")
+
+num = 0
+for (file in files) {
+    name_ext <- basename(file) # path dir without the extension
+    name <- tools::file_path_sans_ext(name_ext) # put in the table the accession number without the path of the directory
+    header_fasta <- ape::read.FASTA(file) # take the header of the fasta file
+    name_seq <- names(header_fasta) # and put it into a variable
+    df <- data.frame("Assembly_Accession" = name, "FASTA_header" = name_seq) # creation of a table in which for each fasta header there is the correspondent accession number
+    tab_accnum_fasta <- rbind(df, tab_accnum_fasta)
+}
+head(tab_accnum_fasta)
+
+# delete last row of the dataframe, that is empty
+tab_accnum_fasta <- tab_accnum_fasta[rowSums(is.na(tab_accnum_fasta)) != ncol(tab_accnum_fasta), ]
+
+tab_accnum_fasta$Assembly_Accession <- sub("\\..*", "", tab_accnum_fasta$Assembly_Accession) # delete the numbers of the accession name after the point
+tab_accnum_names$Assembly_Accession <- sub("\\..*", "", tab_accnum_names$Assembly_Accession) # delete the numbers of the accession name after the point
+```
+```{r 3c. Creation table FASTA header and accnum_orgname as columns, echo=FALSE}
+final_tab <- merge(tab_accnum_names, tab_accnum_fasta, by="Assembly_Accession")
+head(final_tab)
+ncol(final_tab)
+```
+
+Creation of a table in which there are fasta headers and the correspondent new name that we would like to give (accnum_orgname).
+
+The creation of this table is useful because it is required to the rename.fasta function that we will use next
+
+```{r 3c. Selection of columns}
+tab_names_header <- final_tab[,c(3,4)]
+head(tab_names_header,7)
+tab_names_header <- tab_names_header[,c(2,1)]
+head(tab_names_header)
+```
+
+After having concatenated all the FASTA sequences in a unique file (16s_sequences.fasta), we rename the FASTA using the previously created table with names and header of the FASTA file
+
+```{r 3c. Rename FASTA file}
+setwd("/Users/micheladellalma/Desktop/PROJECT/3rd_analysis/2_Extract_16s_sequences/")
+getwd()
+rename.fasta(infile = "16s_sequences.fasta", tab_names_header, outfile = "renamed_16s_seq_new.fasta")
+```
+We used this script (4_Count_16srRNA.sh) to have a table containing accession numbers and number of copies of 16s rRNA. The output is called "accnum_count16s.txt".
+
+We create a final table that contains information on Assembly Accession, count of 16s rRNA, organism names and fasta header and we write it to a final txt file (trait_vs_accnum.txt)
+
+```{r 3c. Creation of final table with all infos}
+final_tab <- merge(tab_names_header, final_tab, by="FASTA_header") # table with names ID (not duplicates)
+final_tab <- final_tab[order(final_tab$`Organism Name`),]
+trait_tab <- read.table("/Users/micheladellalma/Desktop/PROJECT/3rd_analysis/3_Extract_num_16s_per_genome/accnum_count16s.txt")
+colnames(trait_tab) <- c("Assembly_Accession", "count")
+dim(trait_tab)
+tot_info_table <- merge(trait_tab, final_tab, by = "Assembly_Accession")
+dim(tot_info_table)
+setwd("/Users/micheladellalma/Desktop/PROJECT/3rd_analysis/5_Phylogenetic_tree/")
+getwd()
+write.table(tot_info_table, "trait_vs_accnum.txt")
+head(tot_info_table)
+```
+
+### Analysis of the phylogenetic tree
+```{r 3c. Read Newick file}
+library(phytools)
+setwd("/Users/micheladellalma/Desktop/PROJECT/3rd_analysis/5_Phylogenetic_tree")
+getwd()
+phylo_tree <- read.newick("Newick Export.nwk")
+str(phylo_tree) # see the components present in the tree object, in particular it is a list composed by 5 elements
+```
+
+```{r 3c. Check same names in the tree and in the table}
+library(geiger)
+# take only the names used either in the tree and the counts (trait)
+tab_trait_treename <- tot_info_table[,c(4,2)] # take column "count" and "Name_ID"
+# put Name_ID as row name
+row.names(tab_trait_treename) <- tab_trait_treename$names.x
+tab_trait_treename$names.x <- NULL
+name.check(phylo_tree, tab_trait_treename) # check that the tree and the trait table contain the same Accnum_organismname
+head(tab_trait_treename)
+```
+Plot phylogenetic tree
+```{r 3c. Plot phylogenetic tree}
+## extract number of copies as a vector
+num.copies <- setNames(tab_trait_treename[,1], rownames(tab_trait_treename))
+## set colors for plotting
+cols <- setNames(c("red","lightblue", "yellow","violet","blue","grey","green","brown","orange","pink"), levels(as.factor(num.copies)))
+## plot the tree & data
+plotTree.datamatrix(phylo_tree,as.data.frame(num.copies),
+                    colors=list(cols), header=FALSE, fsize=0.2)
+## add legend
+legend("topright", levels(as.factor(num.copies)),pch=22,
+       pt.cex=1.5,pt.bg=cols,bty="n",cex=0.8)
+```
+
+### 3.c. Prediction of missing traits with phyestimate
+
+Now we take away from the trait data, one accession number at a time and we see if can be predicted with phyestimate function
+
+In the phyestimate function the ML method is used, since as we saw previously the best model to fit our data is the Mk model and this model belongs to the ML method
+
+```{r 3c. Prediction with phyestimate}
+library(picante)
+estimateCUE2 <- data.frame(matrix(ncol=3))
+colnames(estimateCUE2) <- c("Taxa", "Trait_predicted", "Trait_real")
+for(i in 1:60) {
+  num.copies_sub <- num.copies[-i]
+  estimater<-phyEstimateDisc(phylo_tree, num.copies_sub, method="ML", best.state = FALSE) # used the Maximum-Likelihood approach for ancestral state reconstruction because is the only one possible for discrete characters estimation
+  taxa <- row.names(estimater)
+  est <- max.col(estimater)
+  true_vl_df <- as.data.frame(num.copies[i])
+  colnames(true_vl_df) <- "Num_copies"
+  true_vl <- true_vl_df$Num_copies
+  estimateCUE2<-rbind(estimateCUE2, c(taxa, est, true_vl))
+}
+estimateCUE2 <- estimateCUE2[-1,]
+# delete first row in the dataframe
+```
+
+### 4.c. Correlation between predicted and effective trait
+
+Check correlation between estimated values and real values
+
+```{r 3c. Correlation between predicted and effective value}
+estimateCUE2$Trait_real <- as.numeric(as.character(estimateCUE2$Trait_real))# transforming columns into numeric
+estimateCUE2$Trait_predicted <- as.numeric(as.character(estimateCUE2$Trait_predicted))          
+print(cor.test(estimateCUE2$Trait_real, estimateCUE2$Trait_predicted, method="spearman"))
+```
+The test results in a weak positive correlation, that does not have a significant p-value, for this reason the prediction that relies on the phylogenetic tree composed by only one copy of 16s rRNA for each organism is not reliable.
+
+## Discussion
+
+From the analysis have been seen that the estimation of 16s rRNA number of copies with the function phyestimate is effective, in particular the optimal result is reached when we have information of the trait for very similar sequences (in our case other copies of the 16s rRNA in the same organism), the effectiveness of the estimation decreases significantly when we consider only one copy of 16s rRNA for genome in the phylogenetic tree, this result could be improved by considering an higher amount of genomes (since initially we consider only 64 alphaproteobacteria organisms).
+
+Things that could be varied in the pipeline to improve the estimation is the use of a function that takes into account also the model that best fits the data, and also the possible use of other marker genes, like for example, in the case of the alphaproteobacteria, 200 genes that have been seen to be conserved [4]
+
+
+## Citations
+
+[1] Wang, S., Luo, H. Dating Alphaproteobacteria evolution with eukaryotic fossils. Nat Commun 12, 3324 (2021).
+
+[2] Sutton, Shirley. Multiple Sequence Alignment : A Critical Comparison of Four Popular Programs. (2008).
+
+[3] Revell L., Harmon L., Phylogenetic Comparative Methods in R. (2022).
+
+[4] Muñoz-Gómez SA, Hess S, Burger G, Lang BF, Susko E, Slamovits CH, Roger AJ. An updated phylogeny of the Alphaproteobacteria reveals that the parasitic Rickettsiales and Holosporales have independent origins. Elife. (2019)
